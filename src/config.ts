@@ -14,6 +14,12 @@ export interface FollowMeConfig {
   minLinearVelocity?: number;
   depthTopic?: string;
   visionCallbackUrl?: string;
+  /** Use depth sectors (left/center/right) to turn toward person when not using Ollama. Default true. */
+  useDepthSectors?: boolean;
+  /** Angular speed (rad/s) when searching for person when lost. Default 0.4. */
+  searchAngularVelocity?: number;
+  /** Number of loop ticks to rotate one direction before switching when searching. Default 15. */
+  searchTicksBeforeSwitch?: number;
 }
 
 const DEFAULTS: Required<FollowMeConfig> = {
@@ -28,6 +34,9 @@ const DEFAULTS: Required<FollowMeConfig> = {
   minLinearVelocity: 0.3,
   depthTopic: "",
   visionCallbackUrl: "",
+  useDepthSectors: true,
+  searchAngularVelocity: 0.4,
+  searchTicksBeforeSwitch: 15,
 };
 
 export function getFollowMeConfig(skillsSlice: unknown): FollowMeConfig {
@@ -48,5 +57,10 @@ export function getFollowMeConfig(skillsSlice: unknown): FollowMeConfig {
     depthTopic: typeof c.depthTopic === "string" ? c.depthTopic : DEFAULTS.depthTopic,
     visionCallbackUrl:
       typeof c.visionCallbackUrl === "string" ? c.visionCallbackUrl : DEFAULTS.visionCallbackUrl,
+    useDepthSectors: c.useDepthSectors !== false,
+    searchAngularVelocity:
+      typeof c.searchAngularVelocity === "number" ? c.searchAngularVelocity : DEFAULTS.searchAngularVelocity,
+    searchTicksBeforeSwitch:
+      typeof c.searchTicksBeforeSwitch === "number" ? c.searchTicksBeforeSwitch : DEFAULTS.searchTicksBeforeSwitch,
   };
 }

@@ -4,7 +4,11 @@ Follow Me skill for [AgenticROS](https://github.com/your-org/agenticros): the ro
 
 ## What it does
 
-- **Behavior**: A control loop runs at a configured rate (e.g. 5 Hz). It samples distance from a depth topic (e.g. RealSense) and optionally uses Ollama (e.g. Qwen VL) for person detection and left/right steering. It publishes twist commands to `cmd_vel` to keep the user at a target distance and centered.
+- **Behavior**: A control loop runs at a configured rate (e.g. 5 Hz). It samples distance from a **depth topic** (e.g. RealSense) and optionally uses Ollama (e.g. Qwen VL) for person detection and left/right steering. It publishes twist commands to `cmd_vel` to keep the user at a target distance and centered. **You must set `depthTopic`** in `config.skills.followme` (e.g. `/camera/camera/depth/image_rect_raw`) for non-zero motion; otherwise the published twist stays zero. When you **stop** Follow Me, the skill publishes zero twist to `cmd_vel` so the robot actually stops (many bases hold the last command until a new one arrives).
+- **Turn left/right**: With **depth only**, the skill uses left/center/right sectors of the depth image to turn toward the person (closest sector). With **Ollama** enabled, the VLM provides left/center/right for steering.
+- **Find person when lost**: When no valid depth is received (person left the view), the robot **rotates in place** (search mode), alternating direction every few seconds so it can find the person again.
+- **Back up when too close**: If the person is closer than ~80% of the target distance, the robot drives backward.
+- **No separate service**: Control is entirely via the plugin and the `follow_robot` tool in chat (Zenoh/ROS2). There is no HTTP follow-robot service or port.
 - **Tools**:  
   - **`follow_robot`** — Start, stop, or query Follow Me (actions: `start`, `stop`, `status`).  
   - **`follow_me_see`** — When Ollama is enabled, returns what the vision model sees (person position/distance hint).  
@@ -60,6 +64,21 @@ Config is the full AgenticROS config; the skill only uses `config.skills.followm
 6. **Install**: Users add your package to `skillPackages` or install into a path in `skillPaths` and set `config.skills.<skillId>` as needed.
 
 Full contract and types: **[AgenticROS docs: Skills](https://github.com/your-org/agenticros/blob/main/docs/skills.md)** (replace with your repo URL).
+
+## Config options (config.skills.followme)
+
+| Option | Description |
+|--------|-------------|
+| `depthTopic` | **Required for motion.** Depth image topic (e.g. `/camera/camera/depth/image_rect_raw`). If empty, twist stays 0. |
+| `targetDistance` | Target follow distance in meters (default 0.5). |
+| `rateHz` | Loop rate (default 5). |
+| `minLinearVelocity` | Min forward/back speed when adjusting distance (default 0.3). |
+| `cmdVelTopic` | Override cmd_vel topic (default: from teleop or robot namespace). |
+| `useDepthSectors` | If true (default), use depth left/center/right sectors to turn toward the person when not using Ollama. |
+| `searchAngularVelocity` | Angular speed (rad/s) when rotating to search for person when lost (default 0.4). |
+| `searchTicksBeforeSwitch` | Ticks to rotate one direction before switching when searching (default 15). |
+| `useOllama` | If true, use Ollama for left/right steering (optional). |
+| `cameraTopic`, `ollamaUrl`, `vlmModel` | Used when `useOllama` is true. |
 
 ## Contract summary
 

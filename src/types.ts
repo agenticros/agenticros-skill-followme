@@ -17,6 +17,14 @@ export interface DepthSampleResult {
   max_m: number;
 }
 
+export interface DepthSectorsResult {
+  left_m: number;
+  center_m: number;
+  right_m: number;
+  valid: boolean;
+  topic: string;
+}
+
 export interface SkillContext {
   getTransport(): RosTransport;
   getDepthDistance(
@@ -24,6 +32,11 @@ export interface SkillContext {
     topic: string,
     timeoutMs?: number,
   ): Promise<DepthSampleResult>;
+  getDepthSectors(
+    transport: RosTransport,
+    topic: string,
+    timeoutMs?: number,
+  ): Promise<DepthSectorsResult>;
   logger: { info(msg: string): void; warn(msg: string): void; error(msg: string): void };
 }
 

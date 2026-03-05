@@ -19,6 +19,8 @@ let loopInterval: ReturnType<typeof setInterval> | null = null;
 let loopAbort: AbortController | null = null;
 let tickInProgress = false;
 let loggedNoDepth = false;
+let searchTickCount = 0;
+let searchDirection = 1; // 1 = turn left (positive angularZ), -1 = turn right
 
 export function getFollowMeCmdVelTopic(config: AgenticROSConfig): string {
   const fm = getFollowMeConfig(config.skills?.followme);
@@ -120,10 +122,17 @@ function runLoopTick(
   void (async () => {
     try {
       const depthTopic = (config.depthTopic ?? "").trim();
+      const searchAngular = config.searchAngularVelocity ?? 0.4;
+      const searchTicksBeforeSwitch = config.searchTicksBeforeSwitch ?? 15;
+      let personInView = false;
+
       if (depthTopic) {
         const result = await context.getDepthDistance(transport, depthTopic, 2000);
         if (result.valid) {
+          personInView = true;
+          searchTickCount = 0; // reset search when we see someone
           const d = result.distance_m;
+          // Back up if person too close; move forward if too far
           if (d < targetDistance * 0.8) linearX = -minLin;
           else if (d > targetDistance * 1.2) linearX = minLin;
         }
@@ -136,6 +145,7 @@ function runLoopTick(
         }
       }
 
+      // Turn left/right: Ollama (VLM) or depth sectors
       if (config.useOllama && config.cameraTopic) {
         const messageType =
           config.cameraMessageType === "Image" ? IMAGE_TYPE : COMPRESSED_IMAGE_TYPE;
@@ -148,6 +158,35 @@ function runLoopTick(
         );
         if (position === "left") angularZ = 0.4;
         else if (position === "right") angularZ = -0.4;
+      } else if (personInView && depthTopic && config.useDepthSectors !== false) {
+        // Depth-based turning: turn toward the sector (left/center/right) with closest distance
+        try {
+          const sectors = await context.getDepthSectors(transport, depthTopic, 1500);
+          if (sectors.valid) {
+            const turnVel = 0.35;
+            const left = Number.isFinite(sectors.left_m) && sectors.left_m > 0 ? sectors.left_m : Infinity;
+            const center = Number.isFinite(sectors.center_m) && sectors.center_m > 0 ? sectors.center_m : Infinity;
+            const right = Number.isFinite(sectors.right_m) && sectors.right_m > 0 ? sectors.right_m : Infinity;
+            const minD = Math.min(left, center, right);
+            if (minD !== Infinity) {
+              const centerOk = Math.abs(center - minD) < 0.15;
+              if (!centerOk && left === minD) angularZ = turnVel;
+              else if (!centerOk && right === minD) angularZ = -turnVel;
+            }
+          }
+        } catch {
+          // Sectors failed; keep angularZ 0
+        }
+      }
+
+      // When person not in view: rotate in place to search, alternating direction
+      if (!personInView && depthTopic) {
+        searchTickCount++;
+        if (searchTickCount >= searchTicksBeforeSwitch) {
+          searchDirection = -searchDirection;
+          searchTickCount = 0;
+        }
+        angularZ = searchDirection * searchAngular;
       }
 
       const twist = {
@@ -199,6 +238,8 @@ export function stopFollowLoop(
     loopAbort = null;
   }
   loggedNoDepth = false;
+  searchTickCount = 0;
+  searchDirection = 1;
 
   // Publish zero twist so the robot actually stops (many robots hold last command until a new one)
   try {
