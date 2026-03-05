@@ -1,0 +1,23 @@
+{
+  "name": "agenticros-skill-followme",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Follow Me skill for AgenticROS — depth-based (and optional Ollama VLM) person following",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "agenticrosSkill": true,
+  "dependencies": {
+    "@agenticros/core": "file:../agenticros/packages/core",
+    "@sinclair/typebox": "^0.34.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "typescript": "^5.7.0"
+  },
+  "author": "PlaiPin",
+  "license": "Apache-2.0"
+}
