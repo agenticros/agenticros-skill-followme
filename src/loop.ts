@@ -18,6 +18,7 @@ const VLM_PROMPT =
 let loopInterval: ReturnType<typeof setInterval> | null = null;
 let loopAbort: AbortController | null = null;
 let tickInProgress = false;
+let loggedNoDepth = false;
 
 export function getFollowMeCmdVelTopic(config: AgenticROSConfig): string {
   const fm = getFollowMeConfig(config.skills?.followme);
@@ -126,6 +127,13 @@ function runLoopTick(
           if (d < targetDistance * 0.8) linearX = -minLin;
           else if (d > targetDistance * 1.2) linearX = minLin;
         }
+      } else {
+        if (!loggedNoDepth) {
+          context.logger.warn(
+            "Follow Me: depthTopic is not set in config.skills.followme; linear velocity will always be 0. Set depthTopic to your depth image topic (e.g. /camera/camera/depth/image_rect_raw) for distance-based following.",
+          );
+          loggedNoDepth = true;
+        }
       }
 
       if (config.useOllama && config.cameraTopic) {
@@ -149,11 +157,7 @@ function runLoopTick(
       transport.publish({ topic, type: TWIST_TYPE, msg: twist });
     } catch {
       // Publish zero on error to avoid runaway
-      transport.publish({
-        topic,
-        type: TWIST_TYPE,
-        msg: { linear: { x: 0, y: 0, z: 0 }, angular: { x: 0, y: 0, z: 0 } },
-      });
+      transport.publish({ topic, type: TWIST_TYPE, msg: ZERO_TWIST });
     } finally {
       tickInProgress = false;
     }
@@ -177,7 +181,15 @@ export function startFollowLoop(
   }, 1000 / rateHz);
 }
 
-export function stopFollowLoop(): void {
+const ZERO_TWIST = {
+  linear: { x: 0, y: 0, z: 0 },
+  angular: { x: 0, y: 0, z: 0 },
+};
+
+export function stopFollowLoop(
+  config: AgenticROSConfig,
+  context: SkillContext,
+): void {
   if (loopInterval) {
     clearInterval(loopInterval);
     loopInterval = null;
@@ -185,6 +197,18 @@ export function stopFollowLoop(): void {
   if (loopAbort) {
     loopAbort.abort();
     loopAbort = null;
+  }
+  loggedNoDepth = false;
+
+  // Publish zero twist so the robot actually stops (many robots hold last command until a new one)
+  try {
+    const transport = context.getTransport();
+    const topic = getFollowMeCmdVelTopic(config);
+    for (let i = 0; i < 3; i++) {
+      transport.publish({ topic, type: TWIST_TYPE, msg: ZERO_TWIST });
+    }
+  } catch {
+    // Transport may be disconnected; stopping the loop is still done
   }
 }
 

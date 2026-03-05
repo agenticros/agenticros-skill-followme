@@ -38,7 +38,7 @@ export function registerFollowRobotTool(
       }
 
       if (action === "stop") {
-        stopFollowLoop();
+        stopFollowLoop(config, context);
         return {
           content: [{ type: "text" as const, text: "Follow Me stopped." }],
           details: { stopped: true },
