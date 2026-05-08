@@ -24,13 +24,28 @@ export function registerFollowRobotTool(
       ], {
         description: "start to begin following, stop to halt, status to check state",
       }),
+      target_distance_m: Type.Optional(
+        Type.Number({
+          minimum: 0.25,
+          maximum: 5,
+          description:
+            "Standoff distance in meters when action is start (e.g. 1). Matches config default if omitted.",
+        }),
+      ),
     }),
 
     async execute(_toolCallId, params) {
       const action = (params["action"] as string) ?? "status";
 
       if (action === "start") {
-        startFollowLoop(config, context);
+        const raw = params["target_distance_m"];
+        const targetDistanceM =
+          typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
+        startFollowLoop(
+          config,
+          context,
+          targetDistanceM != null ? { targetDistanceM } : undefined,
+        );
         return {
           content: [{ type: "text" as const, text: "Follow Me started. The robot will follow you; say \"stop following\" to halt." }],
           details: { started: true },

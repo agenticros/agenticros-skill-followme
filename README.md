@@ -70,7 +70,7 @@ Full contract and types: **[AgenticROS docs: Skills](https://github.com/your-org
 | Option | Description |
 |--------|-------------|
 | `depthTopic` | **Required for motion.** Depth image topic (e.g. `/camera/camera/depth/image_rect_raw`). If empty, twist stays 0. |
-| `targetDistance` | Target follow distance in meters (default 0.5). |
+| `targetDistance` | Target follow distance in meters (default 1.0). |
 | `rateHz` | Loop rate (default 5). |
 | `minLinearVelocity` | Min forward/back speed when adjusting distance (default 0.3). |
 | `cmdVelTopic` | Override cmd_vel topic (default: from teleop or robot namespace). |

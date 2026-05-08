@@ -20,23 +20,42 @@ export interface FollowMeConfig {
   searchAngularVelocity?: number;
   /** Number of loop ticks to rotate one direction before switching when searching. Default 15. */
   searchTicksBeforeSwitch?: number;
+  /**
+   * If depth (after fusion) is at or below this distance (m), publish zero twist — hard stop when something is uncomfortably close.
+   * Default 0.4. Set lower only if your depth is very noisy near the sensor.
+   */
+  criticalStopDistanceM?: number;
+  /** Negate cmd_vel linear.x before publishing (robot drives backward when UI says forward). Default false. */
+  invertLinearX?: boolean;
+  /** Log per-tick timing (depth / vision / total) for latency debugging. Default false. */
+  logTickTiming?: boolean;
+  /**
+   * Fraction of safety.maxLinearVelocity / maxAngularVelocity used as the cap for Follow Me (e.g. 0.2 = 20%).
+   * Default 0.2.
+   */
+  maxVelocityFraction?: number;
 }
 
 const DEFAULTS: Required<FollowMeConfig> = {
-  useOllama: false,
+  useOllama: true,
   ollamaUrl: "http://localhost:11434",
   vlmModel: "qwen3-vl:2b",
-  cameraTopic: "/camera/image_raw/compressed",
+  cameraTopic: "/camera/camera/image_raw/compressed",
   cameraMessageType: "CompressedImage",
   cmdVelTopic: "",
-  targetDistance: 0.5,
+  /** Meters; person should stop near this range (loop uses a deadband around this value). */
+  targetDistance: 1.0,
   rateHz: 5,
-  minLinearVelocity: 0.3,
-  depthTopic: "",
+  minLinearVelocity: 0.2,
+  depthTopic: "/camera/camera/depth/image_rect_raw",
   visionCallbackUrl: "",
   useDepthSectors: true,
   searchAngularVelocity: 0.4,
   searchTicksBeforeSwitch: 15,
+  criticalStopDistanceM: 0.4,
+  invertLinearX: false,
+  logTickTiming: true,
+  maxVelocityFraction: 0.2,
 };
 
 export function getFollowMeConfig(skillsSlice: unknown): FollowMeConfig {
@@ -62,5 +81,13 @@ export function getFollowMeConfig(skillsSlice: unknown): FollowMeConfig {
       typeof c.searchAngularVelocity === "number" ? c.searchAngularVelocity : DEFAULTS.searchAngularVelocity,
     searchTicksBeforeSwitch:
       typeof c.searchTicksBeforeSwitch === "number" ? c.searchTicksBeforeSwitch : DEFAULTS.searchTicksBeforeSwitch,
+    criticalStopDistanceM:
+      typeof c.criticalStopDistanceM === "number" ? c.criticalStopDistanceM : DEFAULTS.criticalStopDistanceM,
+    invertLinearX: c.invertLinearX === true,
+    logTickTiming: c.logTickTiming === true,
+    maxVelocityFraction:
+      typeof c.maxVelocityFraction === "number" && c.maxVelocityFraction > 0
+        ? c.maxVelocityFraction
+        : DEFAULTS.maxVelocityFraction,
   };
 }
