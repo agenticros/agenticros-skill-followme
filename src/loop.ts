@@ -1,5 +1,5 @@
 /**
- * Follow Me control loop: depth (and optional Ollama) + cmd_vel.
+ * Follow Me control loop: VLM gates human presence; depth (RealSense) sets range; cmd_vel.
  */
 
 import type { AgenticROSConfig } from "@agenticros/core";
@@ -8,24 +8,30 @@ import type { RosTransport } from "@agenticros/core";
 import type { SkillContext } from "./types.js";
 import type { FollowMeConfig } from "./config.js";
 import { getFollowMeConfig } from "./config.js";
+import {
+  IMAGE_TYPE,
+  COMPRESSED_IMAGE_TYPE,
+  HUMAN_DETECTION_PROMPT,
+  grabCameraSnapshot,
+  callOllamaVision,
+  callOpenAIVision,
+  parseHumanDetectionResponse,
+  type LateralPosition,
+} from "./vision.js";
 
 const TWIST_TYPE = "geometry_msgs/msg/Twist";
-const IMAGE_TYPE = "sensor_msgs/msg/Image";
-const COMPRESSED_IMAGE_TYPE = "sensor_msgs/msg/CompressedImage";
-const VLM_PROMPT =
-  "Describe in one short sentence: Is a person visible in the center of the image? If yes, are they left of center, right of center, or centered? How far do they appear: very close, medium, or far?";
 
 let loopInterval: ReturnType<typeof setInterval> | null = null;
 let loopAbort: AbortController | null = null;
 let tickInProgress = false;
-/** Throttle "tick skipped" warnings when the async body runs longer than the interval. */
 let lastTickSkippedLogMs = 0;
 let loggedNoDepth = false;
 /** Throttle warnings when depthTopic is set but samples stay invalid (bridge/topic/encoding). */
 let lastDepthInvalidWarnMs = 0;
+let loggedNoCameraForVision = false;
+let loggedMissingOpenAiKey = false;
 let searchTickCount = 0;
-let searchDirection = 1; // 1 = turn left (positive angularZ), -1 = turn right
-/** Per-session standoff from `follow_robot` tool; cleared on stop. */
+let searchDirection = 1;
 let sessionTargetDistanceM: number | null = null;
 
 export function getFollowMeCmdVelTopic(config: AgenticROSConfig): string {
@@ -39,85 +45,8 @@ export function getFollowMeCmdVelTopic(config: AgenticROSConfig): string {
   return toNamespacedTopicFull(config, "/cmd_vel");
 }
 
-async function callOllamaVision(
-  ollamaUrl: string,
-  model: string,
-  base64Image: string,
-  prompt: string,
-  timeoutMs = 15000,
-): Promise<string> {
-  const url = `${ollamaUrl.replace(/\/$/, "")}/api/generate`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        prompt,
-        images: [base64Image],
-        stream: false,
-      }),
-      signal: controller.signal,
-    });
-    if (!res.ok) {
-      const t = await res.text();
-      throw new Error(`Ollama ${res.status}: ${t.slice(0, 200)}`);
-    }
-    const data = (await res.json()) as { response?: string };
-    return (data.response ?? "").trim();
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function parsePositionFromVlm(response: string): "left" | "center" | "right" | null {
-  const lower = response.toLowerCase();
-  if (lower.includes("left")) return "left";
-  if (lower.includes("right")) return "right";
-  if (lower.includes("center") || lower.includes("centred")) return "center";
-  return null;
-}
-
-async function getPositionFromOllama(
-  transport: RosTransport,
-  topic: string,
-  messageType: string,
-  ollamaUrl: string,
-  model: string,
-): Promise<"left" | "center" | "right" | null> {
-  const msg = await new Promise<Record<string, unknown>>((resolve, reject) => {
-    const sub = transport.subscribe(
-      { topic, type: messageType },
-      (m: Record<string, unknown>) => {
-        clearTimeout(timer);
-        sub.unsubscribe();
-        resolve(m);
-      },
-    );
-    const timer = setTimeout(() => {
-      sub.unsubscribe();
-      reject(new Error("Camera snapshot timeout"));
-    }, 5000);
-  });
-
-  const data = msg.data;
-  let base64: string;
-  if (typeof data === "string") base64 = data;
-  else if (Array.isArray(data)) base64 = Buffer.from(data as number[]).toString("base64");
-  else if (data != null && typeof (data as { toString: (s: string) => string }).toString === "function")
-    base64 = (data as Buffer).toString("base64");
-  else throw new Error("No image data");
-
-  const responseText = await callOllamaVision(ollamaUrl, model, base64, VLM_PROMPT);
-  return parsePositionFromVlm(responseText);
-}
-
 /**
- * The reported distance uses a lower percentile; when the center ROI mixes a near person with far
- * wall/floor, the percentile can stay "too far" and the robot keeps driving. If the closest pixels
- * disagree strongly with that reading, trust the minimum (guarded for speckle).
+ * Distance fusion: percentile vs min (see plugin depth helper).
  */
 function effectiveFollowDistanceM(result: {
   valid: boolean;
@@ -130,6 +59,26 @@ function effectiveFollowDistanceM(result: {
   if (!Number.isFinite(m) || m <= 0.12) return p;
   if (m < p - 0.06) return Math.min(p, m);
   return p;
+}
+
+/**
+ * Single range estimate for control: prefer the closer of percentile vs minimum pixel depth.
+ * Previously we ignored min when ≤0.12 m (speckle guard); that let a far wall percentile (~5 m)
+ * dominate while the person was actually close — robot never stopped.
+ */
+function followRangeDistanceM(result: {
+  valid: boolean;
+  distance_m: number;
+  min_m: number;
+}): number {
+  const p = effectiveFollowDistanceM(result);
+  if (!result.valid || !Number.isFinite(p)) return p;
+  const minM = result.min_m;
+  if (!Number.isFinite(minM) || minM <= 0.02) return p;
+  let d = Math.min(p, minM);
+  // Depth dropout speckle (<3 cm) with otherwise far scene — ignore lone pixel
+  if (minM < 0.03 && p > 4.0) d = p;
+  return d;
 }
 
 function runLoopTick(
@@ -145,8 +94,7 @@ function runLoopTick(
       lastTickSkippedLogMs = now;
       context.logger.warn(
         "Follow Me: control tick skipped because the previous tick is still running. " +
-          "The robot keeps the last cmd_vel until the next completed tick — if you use Ollama vision, try a lower rateHz or depth-only mode. " +
-          "Distance is sampled from the depth topic each tick (not the teleop HTTP video); ensure skills.followme.depthTopic is correct.",
+          "Lower skills.followme.rateHz or use a faster VLM; each tick waits for camera + vision + depth.",
       );
     }
     return;
@@ -171,7 +119,10 @@ function runLoopTick(
     const t0 = performance.now();
     let depthMs = 0;
     let sectorsMs = 0;
-    let ollamaMs = 0;
+    let visionMs = 0;
+    const snapTimeout = config.cameraSnapshotTimeoutMs ?? 4000;
+    const vlmTimeout = config.vlmTimeoutMs ?? 12000;
+
     function twistMessage(linX: number, angZ: number) {
       let lx = linX;
       if (config.invertLinearX) lx = -lx;
@@ -182,48 +133,115 @@ function runLoopTick(
         angular: { x: 0, y: 0, z: az },
       });
     }
-    try {
-      const depthTopic = (config.depthTopic ?? "").trim();
-      const searchAngular = Math.min(config.searchAngularVelocity ?? 0.4, maxAngCap);
-      const searchTicksBeforeSwitch = config.searchTicksBeforeSwitch ?? 15;
-      const criticalM =
-        typeof config.criticalStopDistanceM === "number" && config.criticalStopDistanceM > 0
-          ? config.criticalStopDistanceM
-          : 0.4;
-      let personInView = false;
-      let d = NaN;
-      let inStandoff = false;
-      /** Depth topic configured but sample invalid — do not spin search (reads as "lost"). */
-      let depthSampleBad = false;
 
-      if (depthTopic) {
+    const depthTopic = (config.depthTopic ?? "").trim();
+    const searchAngular = Math.min(config.searchAngularVelocity ?? 0.4, maxAngCap);
+    const searchTicksBeforeSwitch = config.searchTicksBeforeSwitch ?? 15;
+    const criticalM =
+      typeof config.criticalStopDistanceM === "number" && config.criticalStopDistanceM > 0
+        ? config.criticalStopDistanceM
+        : 0.4;
+
+    const cameraTopic = (config.cameraTopic ?? "").trim();
+    const visionEnabled = config.useOllama !== false && !!cameraTopic;
+
+    let humanSeen = false;
+    let vlmSaysClose = false;
+    let lateralHint: LateralPosition | null = null;
+    let visionError = false;
+    let depthSampleBad = false;
+    let d = NaN;
+    let inStandoff = false;
+
+    try {
+      /* ---------- Vision: human gate + lateral hint (optional OpenAI or Ollama) ---------- */
+      if (visionEnabled) {
+        const messageType =
+          config.cameraMessageType === "Image" ? IMAGE_TYPE : COMPRESSED_IMAGE_TYPE;
+        const v0 = performance.now();
+        try {
+          const snapshot = await grabCameraSnapshot(transport, cameraTopic, messageType, snapTimeout);
+          let rawText: string;
+          if (config.visionProvider === "openai") {
+            const apiKey = (config.openaiApiKey || process.env.OPENAI_API_KEY || "").trim();
+            if (!apiKey) {
+              if (!loggedMissingOpenAiKey) {
+                loggedMissingOpenAiKey = true;
+                context.logger.warn(
+                  "Follow Me: visionProvider is openai but no API key. Set skills.followme.openaiApiKey or OPENAI_API_KEY.",
+                );
+              }
+              visionError = true;
+            } else {
+              const model = config.openaiVisionModel ?? "gpt-4o-mini";
+              const baseUrl = (config.openaiBaseUrl ?? "").trim() || undefined;
+              rawText = await callOpenAIVision(apiKey, model, snapshot, HUMAN_DETECTION_PROMPT, vlmTimeout, baseUrl);
+              const parsed = parseHumanDetectionResponse(rawText);
+              humanSeen = parsed.human;
+              vlmSaysClose = parsed.appearsClose;
+              lateralHint = parsed.position;
+            }
+          } else {
+            const ollamaUrl = config.ollamaUrl ?? "http://localhost:11434";
+            const model = config.vlmModel ?? "qwen3-vl:2b";
+            rawText = await callOllamaVision(ollamaUrl, model, snapshot.base64, HUMAN_DETECTION_PROMPT, vlmTimeout);
+            const parsed = parseHumanDetectionResponse(rawText);
+            humanSeen = parsed.human;
+            vlmSaysClose = parsed.appearsClose;
+            lateralHint = parsed.position;
+          }
+        } catch (err) {
+          visionError = true;
+          const msg = err instanceof Error ? err.message : String(err);
+          context.logger.warn(`Follow Me vision tick failed: ${msg}`);
+        }
+        visionMs = performance.now() - v0;
+      } else if (config.useOllama !== false && !cameraTopic && !loggedNoCameraForVision) {
+        loggedNoCameraForVision = true;
+        context.logger.warn(
+          "Follow Me: useOllama defaults to true but cameraTopic is empty; falling back to depth-only (no human gate). Set skills.followme.cameraTopic.",
+        );
+      }
+
+      /**
+       * Depth for distance only when:
+       * - legacy depth-only mode (vision off), or
+       * - vision on and the VLM reports a person (trust RealSense range on the ROI).
+       */
+      const shouldSampleDepth =
+        !!depthTopic && (!visionEnabled || (humanSeen && !visionError));
+
+      if (shouldSampleDepth) {
         const d0 = performance.now();
         const result = await context.getDepthDistance(transport, depthTopic, 2000);
         depthMs = performance.now() - d0;
         if (result.valid) {
-          personInView = true;
-          searchTickCount = 0; // reset search when we see someone
-          const dFused = effectiveFollowDistanceM(result);
-          // Closest surface in the center ROI (min_m) must participate in range control: when the
-          // 12th-percentile and min differ by < 0.06 m, effectiveFollowDistanceM keeps the percentile,
-          // which can sit just above criticalStopDistanceM and the base never stops. Always use the
-          // conservative (closer) reading when min is not speckle (same 0.12 m floor as depth.ts).
-          const minTrustM = 0.12;
-          d =
-            Number.isFinite(result.min_m) && result.min_m > minTrustM
-              ? Math.min(dFused, result.min_m)
-              : dFused;
-          const deadband = Math.max(0.18, targetDistance * 0.16);
+          searchTickCount = 0;
+          d = followRangeDistanceM(result);
+          const deadband = Math.max(0.15, targetDistance * 0.12);
           const tooCloseHard = d <= criticalM;
           inStandoff = !tooCloseHard && Math.abs(d - targetDistance) <= deadband;
-          if (tooCloseHard) {
-            linearX = 0;
-          } else if (inStandoff) {
-            linearX = 0;
-          } else if (d < targetDistance - deadband) {
-            linearX = -minLin;
+
+          const allowLinear =
+            !visionEnabled || (humanSeen && !visionError && Number.isFinite(d));
+
+          if (allowLinear) {
+            if (tooCloseHard) {
+              linearX = 0;
+            } else if (inStandoff) {
+              linearX = 0;
+            } else if (d < targetDistance - deadband) {
+              linearX = -minLin;
+            } else {
+              linearX = minLin;
+            }
           } else {
-            linearX = minLin;
+            linearX = 0;
+          }
+
+          /* VLM sees person as visually close — never trust a far depth percentile over that */
+          if (visionEnabled && humanSeen && !visionError && vlmSaysClose) {
+            linearX = 0;
           }
         } else {
           depthSampleBad = true;
@@ -238,55 +256,43 @@ function runLoopTick(
             );
           }
         }
-      } else {
+      } else if (depthTopic && visionEnabled && humanSeen && visionError) {
+        linearX = 0;
+      } else if (!depthTopic) {
         if (!loggedNoDepth) {
           context.logger.warn(
-            "Follow Me: depthTopic is not set in config.skills.followme; linear velocity will always be 0. Set depthTopic to your depth image topic (e.g. /camera/camera/depth/image_rect_raw) for distance-based following.",
+            "Follow Me: depthTopic is not set; linear velocity stays 0. Set skills.followme.depthTopic (e.g. /camera/camera/depth/image_rect_raw).",
           );
           loggedNoDepth = true;
         }
       }
 
-      const holdHeading = personInView && (inStandoff || d <= criticalM);
-
-      /**
-       * Distance (stop / forward / back) comes from the depth image topic: each tick calls
-       * getDepthDistance → subscribe, one sensor_msgs/Image, unsubscribe. That is independent of
-       * the teleop web video stream. Optional camera/Ollama uses the same pattern on cameraTopic.
-       *
-       * Ollama and sector steering can take longer than one interval; publish linear.x from depth
-       * immediately with angular.z=0 so the base does not keep driving on a stale forward command
-       * while waiting for vision.
-       */
-      const needsSteeringRefinement =
-        !holdHeading &&
-        personInView &&
-        ((config.useOllama && !!config.cameraTopic) ||
-          (!!depthTopic && config.useDepthSectors !== false && !config.useOllama));
-
-      if (needsSteeringRefinement) {
-        transport.publish({ topic, type: TWIST_TYPE, msg: twistMessage(linearX, 0) });
+      let personInView: boolean;
+      if (visionEnabled && !visionError) {
+        personInView = humanSeen;
+      } else if (visionEnabled && visionError) {
+        personInView = false;
+      } else if (!visionEnabled && depthTopic) {
+        personInView = Number.isFinite(d) && !depthSampleBad;
+      } else {
+        personInView = Number.isFinite(d) && !depthSampleBad;
       }
 
-      // Turn left/right: Ollama (VLM) or depth sectors — not while in standoff / critical (would keep base moving)
-      if (!holdHeading && !depthSampleBad) {
-        if (config.useOllama && config.cameraTopic) {
-          const messageType =
-            config.cameraMessageType === "Image" ? IMAGE_TYPE : COMPRESSED_IMAGE_TYPE;
-          const o0 = performance.now();
-          const position = await getPositionFromOllama(
-            transport,
-            config.cameraTopic,
-            messageType,
-            config.ollamaUrl ?? "http://localhost:11434",
-            config.vlmModel ?? "qwen3-vl:2b",
-          );
-          ollamaMs = performance.now() - o0;
-          const turnOllama = Math.min(0.4, maxAngCap);
-          if (position === "left") angularZ = turnOllama;
-          else if (position === "right") angularZ = -turnOllama;
-        } else if (personInView && depthTopic && config.useDepthSectors !== false) {
-          // Depth-based turning: turn toward the sector (left/center/right) with closest distance
+      const holdHeading = personInView && Number.isFinite(d) && (inStandoff || d <= criticalM);
+
+      /* ---------- Steering ---------- */
+      const depthOkForSteering = !depthSampleBad || (visionEnabled && humanSeen && !visionError);
+      if (!holdHeading && depthOkForSteering) {
+        if (visionEnabled && humanSeen && !visionError && lateralHint != null) {
+          const turnVel = Math.min(0.4, maxAngCap);
+          if (lateralHint === "left") angularZ = turnVel;
+          else if (lateralHint === "right") angularZ = -turnVel;
+        } else if (
+          !visionEnabled &&
+          personInView &&
+          depthTopic &&
+          config.useDepthSectors !== false
+        ) {
           try {
             const s0 = performance.now();
             const sectors = await context.getDepthSectors(transport, depthTopic, 1500);
@@ -294,7 +300,8 @@ function runLoopTick(
             if (sectors.valid) {
               const turnVel = Math.min(0.35, maxAngCap);
               const left = Number.isFinite(sectors.left_m) && sectors.left_m > 0 ? sectors.left_m : Infinity;
-              const center = Number.isFinite(sectors.center_m) && sectors.center_m > 0 ? sectors.center_m : Infinity;
+              const center =
+                Number.isFinite(sectors.center_m) && sectors.center_m > 0 ? sectors.center_m : Infinity;
               const right = Number.isFinite(sectors.right_m) && sectors.right_m > 0 ? sectors.right_m : Infinity;
               const minD = Math.min(left, center, right);
               if (minD !== Infinity) {
@@ -304,12 +311,12 @@ function runLoopTick(
               }
             }
           } catch {
-            // Sectors failed; keep angularZ 0
+            // keep angularZ 0
           }
         }
       }
 
-      // When person not in view: rotate in place to search, alternating direction
+      /* Search: no human (vision) or lost depth target (legacy) */
       if (!personInView && depthTopic && !depthSampleBad) {
         searchTickCount++;
         if (searchTickCount >= searchTicksBeforeSwitch) {
@@ -320,10 +327,11 @@ function runLoopTick(
       }
 
       transport.publish({ topic, type: TWIST_TYPE, msg: twistMessage(linearX, angularZ) });
+
       if (config.logTickTiming) {
         const totalMs = performance.now() - t0;
         context.logger.info(
-          `Follow Me tick timing: total_ms=${totalMs.toFixed(1)} depth_ms=${depthMs.toFixed(1)} sectors_ms=${sectorsMs.toFixed(1)} ollama_ms=${ollamaMs.toFixed(1)} caps lin=${maxLinCap.toFixed(3)} ang=${maxAngCap.toFixed(3)}`,
+          `Follow Me tick: total_ms=${totalMs.toFixed(1)} vision_ms=${visionMs.toFixed(1)} depth_ms=${depthMs.toFixed(1)} sectors_ms=${sectorsMs.toFixed(1)} human=${visionEnabled ? humanSeen : "n/a"} vlm_close=${visionEnabled ? vlmSaysClose : "n/a"} d_m=${Number.isFinite(d) ? d.toFixed(2) : "na"}`,
         );
       }
     } catch (err) {
@@ -388,11 +396,12 @@ export function stopFollowLoop(
   }
   loggedNoDepth = false;
   lastDepthInvalidWarnMs = 0;
+  loggedNoCameraForVision = false;
+  loggedMissingOpenAiKey = false;
   searchTickCount = 0;
   searchDirection = 1;
   sessionTargetDistanceM = null;
 
-  // Publish zero twist so the robot actually stops (many robots hold last command until a new one)
   try {
     const transport = context.getTransport();
     const topic = getFollowMeCmdVelTopic(config);
@@ -401,7 +410,7 @@ export function stopFollowLoop(
       transport.publish({ topic, type: TWIST_TYPE, msg: zero });
     }
   } catch {
-    // Transport may be disconnected; stopping the loop is still done
+    // Transport may be disconnected
   }
 }
 

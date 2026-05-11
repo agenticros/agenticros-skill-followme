@@ -6,44 +6,15 @@ import { Type } from "@sinclair/typebox";
 import type { AgenticROSConfig } from "@agenticros/core";
 import type { SkillPluginApi, SkillContext } from "../types.js";
 import { getFollowMeConfig } from "../config.js";
-
-const COMPRESSED_IMAGE_TYPE = "sensor_msgs/msg/CompressedImage";
-const IMAGE_TYPE = "sensor_msgs/msg/Image";
-const VLM_PROMPT =
-  "Describe in one short sentence: Is a person visible in the center of the image? If yes, are they left of center, right of center, or centered? How far do they appear: very close, medium, or far?";
-
-async function callOllamaVision(
-  ollamaUrl: string,
-  model: string,
-  base64Image: string,
-  prompt: string,
-  timeoutMs = 15000,
-): Promise<string> {
-  const url = `${ollamaUrl.replace(/\/$/, "")}/api/generate`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        prompt,
-        images: [base64Image],
-        stream: false,
-      }),
-      signal: controller.signal,
-    });
-    if (!res.ok) {
-      const t = await res.text();
-      throw new Error(`Ollama ${res.status}: ${t.slice(0, 200)}`);
-    }
-    const data = (await res.json()) as { response?: string };
-    return (data.response ?? "").trim();
-  } finally {
-    clearTimeout(timer);
-  }
-}
+import {
+  COMPRESSED_IMAGE_TYPE,
+  IMAGE_TYPE,
+  HUMAN_DETECTION_PROMPT,
+  grabCameraSnapshot,
+  callOllamaVision,
+  callOpenAIVision,
+  parseHumanDetectionResponse,
+} from "../vision.js";
 
 export function registerFollowMeDetectionTool(
   api: SkillPluginApi,
@@ -56,19 +27,19 @@ export function registerFollowMeDetectionTool(
     name: "follow_me_see",
     label: "Follow Me see",
     description:
-      "When Follow Me is using Ollama (useOllama is true), returns what the vision model sees in the current camera frame (person position and distance hint). Use when the user asks what the tracker sees or why the robot is not following.",
+      "When Follow Me vision is enabled (useOllama, default true), returns the VLM human gate result and lateral hint for the current camera frame. Use when the user asks what the tracker sees or why the robot is not following.",
 
     parameters: Type.Object({
       timeout: Type.Optional(Type.Number({ description: "Timeout in ms (default 15000)" })),
     }),
 
     async execute(_toolCallId, params) {
-      if (!fm.useOllama) {
+      if (fm.useOllama === false) {
         return {
           content: [
             {
               type: "text" as const,
-              text: "Follow Me is not using Ollama. Set skills.followme.useOllama to true to use this tool.",
+              text: "Follow Me vision is disabled (skills.followme.useOllama is false). Enable it to use this tool.",
             },
           ],
           details: { useOllama: false },
@@ -80,47 +51,52 @@ export function registerFollowMeDetectionTool(
       const messageType =
         fm.cameraMessageType === "Image" ? IMAGE_TYPE : COMPRESSED_IMAGE_TYPE;
       const timeout = (params["timeout"] as number | undefined) ?? 15000;
+      const snapTimeout = Math.min(timeout, fm.cameraSnapshotTimeoutMs ?? 8000);
+      const vlmTimeout = timeout;
 
       try {
-        const msg = await new Promise<Record<string, unknown>>((resolve, reject) => {
-          const sub = transport.subscribe(
-            { topic, type: messageType },
-            (m: Record<string, unknown>) => {
-              clearTimeout(timer);
-              sub.unsubscribe();
-              resolve(m);
-            },
+        const snapshot = await grabCameraSnapshot(transport, topic, messageType, snapTimeout);
+
+        let responseText: string;
+        if (fm.visionProvider === "openai") {
+          const apiKey = (fm.openaiApiKey || process.env.OPENAI_API_KEY || "").trim();
+          if (!apiKey) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: "OpenAI vision selected but no API key. Set skills.followme.openaiApiKey or OPENAI_API_KEY.",
+                },
+              ],
+              details: { error: "no_api_key" },
+            };
+          }
+          const model = fm.openaiVisionModel ?? "gpt-4o-mini";
+          const baseUrl = (fm.openaiBaseUrl ?? "").trim() || undefined;
+          responseText = await callOpenAIVision(
+            apiKey,
+            model,
+            snapshot,
+            HUMAN_DETECTION_PROMPT,
+            vlmTimeout,
+            baseUrl,
           );
-          const timer = setTimeout(() => {
-            sub.unsubscribe();
-            reject(new Error("Camera snapshot timeout"));
-          }, Math.min(timeout, 8000));
-        });
+        } else {
+          const ollamaUrl = fm.ollamaUrl ?? "http://localhost:11434";
+          const model = fm.vlmModel ?? "qwen3-vl:2b";
+          responseText = await callOllamaVision(ollamaUrl, model, snapshot.base64, HUMAN_DETECTION_PROMPT, vlmTimeout);
+        }
 
-        const data = msg.data;
-        let base64: string;
-        if (typeof data === "string") base64 = data;
-        else if (Array.isArray(data))
-          base64 = Buffer.from(data as number[]).toString("base64");
-        else if (
-          data != null &&
-          typeof (data as { toString: (s: string) => string }).toString === "function"
-        )
-          base64 = (data as Buffer).toString("base64");
-        else throw new Error("No image data");
-
-        const ollamaUrl = fm.ollamaUrl ?? "http://localhost:11434";
-        const model = fm.vlmModel ?? "qwen3-vl:2b";
-        const responseText = await callOllamaVision(ollamaUrl, model, base64, VLM_PROMPT, timeout);
+        const parsed = parseHumanDetectionResponse(responseText);
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `What the tracker sees: ${responseText}`,
+              text: `VLM: ${responseText}\n\nParsed: human=${parsed.human}, position=${parsed.position ?? "unknown"}`,
             },
           ],
-          details: { response: responseText },
+          details: { response: responseText, ...parsed },
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

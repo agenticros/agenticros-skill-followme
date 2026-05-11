@@ -3,9 +3,21 @@
  */
 
 export interface FollowMeConfig {
+  /**
+   * Use a VLM on the camera to decide if a person is visible before trusting depth for range.
+   * Default true. When false, any valid depth sample is treated as "target in view" (legacy).
+   */
   useOllama?: boolean;
+  /** Vision backend for human detection + lateral position. Default "ollama". */
+  visionProvider?: "ollama" | "openai";
   ollamaUrl?: string;
   vlmModel?: string;
+  /** API key for OpenAI-compatible vision (also reads env OPENAI_API_KEY if unset). */
+  openaiApiKey?: string;
+  /** Model id for OpenAI vision (e.g. gpt-4o-mini). */
+  openaiVisionModel?: string;
+  /** Optional API base (default https://api.openai.com/v1). Use for Azure proxy if needed. */
+  openaiBaseUrl?: string;
   cameraTopic?: string;
   cameraMessageType?: "CompressedImage" | "Image";
   cmdVelTopic?: string;
@@ -21,14 +33,18 @@ export interface FollowMeConfig {
   /** Number of loop ticks to rotate one direction before switching when searching. Default 15. */
   searchTicksBeforeSwitch?: number;
   /**
-   * If depth (after fusion) is at or below this distance (m), publish zero twist — hard stop when something is uncomfortably close.
-   * Default 0.4. Set lower only if your depth is very noisy near the sensor.
+   * If fused depth is at or below this distance (m), publish zero linear — hard stop when too close.
+   * Default 0.55. Lower only if your depth is noisy near the sensor.
    */
   criticalStopDistanceM?: number;
   /** Negate cmd_vel linear.x before publishing (robot drives backward when UI says forward). Default false. */
   invertLinearX?: boolean;
   /** Log per-tick timing (depth / vision / total) for latency debugging. Default false. */
   logTickTiming?: boolean;
+  /** Timeout (ms) for each VLM request (Ollama generate / OpenAI chat). Default 12000. */
+  vlmTimeoutMs?: number;
+  /** Timeout (ms) to receive one camera message when grabbing a frame. Default 4000. */
+  cameraSnapshotTimeoutMs?: number;
   /**
    * Fraction of safety.maxLinearVelocity / maxAngularVelocity used as the cap for Follow Me (e.g. 0.2 = 20%).
    * Default 0.2.
@@ -38,8 +54,12 @@ export interface FollowMeConfig {
 
 const DEFAULTS: Required<FollowMeConfig> = {
   useOllama: true,
+  visionProvider: "ollama",
   ollamaUrl: "http://localhost:11434",
   vlmModel: "qwen3-vl:2b",
+  openaiApiKey: "",
+  openaiVisionModel: "gpt-4o-mini",
+  openaiBaseUrl: "",
   cameraTopic: "/camera/camera/image_raw/compressed",
   cameraMessageType: "CompressedImage",
   cmdVelTopic: "",
@@ -52,19 +72,27 @@ const DEFAULTS: Required<FollowMeConfig> = {
   useDepthSectors: true,
   searchAngularVelocity: 0.4,
   searchTicksBeforeSwitch: 15,
-  criticalStopDistanceM: 0.4,
+  /** Hard zero linear when fused depth ≤ this (m); slightly generous default for indoor RealSense. */
+  criticalStopDistanceM: 0.55,
   invertLinearX: false,
   logTickTiming: true,
   maxVelocityFraction: 0.2,
+  vlmTimeoutMs: 12000,
+  cameraSnapshotTimeoutMs: 4000,
 };
 
 export function getFollowMeConfig(skillsSlice: unknown): FollowMeConfig {
   if (!skillsSlice || typeof skillsSlice !== "object") return DEFAULTS;
   const c = skillsSlice as Record<string, unknown>;
   return {
-    useOllama: c.useOllama === true,
+    useOllama: typeof c.useOllama === "boolean" ? c.useOllama : DEFAULTS.useOllama,
+    visionProvider: c.visionProvider === "openai" ? "openai" : DEFAULTS.visionProvider,
     ollamaUrl: typeof c.ollamaUrl === "string" ? c.ollamaUrl : DEFAULTS.ollamaUrl,
     vlmModel: typeof c.vlmModel === "string" ? c.vlmModel : DEFAULTS.vlmModel,
+    openaiApiKey: typeof c.openaiApiKey === "string" ? c.openaiApiKey : DEFAULTS.openaiApiKey,
+    openaiVisionModel:
+      typeof c.openaiVisionModel === "string" ? c.openaiVisionModel : DEFAULTS.openaiVisionModel,
+    openaiBaseUrl: typeof c.openaiBaseUrl === "string" ? c.openaiBaseUrl : DEFAULTS.openaiBaseUrl,
     cameraTopic: typeof c.cameraTopic === "string" ? c.cameraTopic : DEFAULTS.cameraTopic,
     cameraMessageType:
       c.cameraMessageType === "Image" ? "Image" : DEFAULTS.cameraMessageType,
@@ -89,5 +117,10 @@ export function getFollowMeConfig(skillsSlice: unknown): FollowMeConfig {
       typeof c.maxVelocityFraction === "number" && c.maxVelocityFraction > 0
         ? c.maxVelocityFraction
         : DEFAULTS.maxVelocityFraction,
+    vlmTimeoutMs: typeof c.vlmTimeoutMs === "number" ? c.vlmTimeoutMs : DEFAULTS.vlmTimeoutMs,
+    cameraSnapshotTimeoutMs:
+      typeof c.cameraSnapshotTimeoutMs === "number"
+        ? c.cameraSnapshotTimeoutMs
+        : DEFAULTS.cameraSnapshotTimeoutMs,
   };
 }
