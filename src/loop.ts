@@ -21,6 +21,8 @@ let tickInProgress = false;
 /** Throttle "tick skipped" warnings when the async body runs longer than the interval. */
 let lastTickSkippedLogMs = 0;
 let loggedNoDepth = false;
+/** Throttle warnings when depthTopic is set but samples stay invalid (bridge/topic/encoding). */
+let lastDepthInvalidWarnMs = 0;
 let searchTickCount = 0;
 let searchDirection = 1; // 1 = turn left (positive angularZ), -1 = turn right
 /** Per-session standoff from `follow_robot` tool; cleared on stop. */
@@ -29,9 +31,11 @@ let sessionTargetDistanceM: number | null = null;
 export function getFollowMeCmdVelTopic(config: AgenticROSConfig): string {
   const fm = getFollowMeConfig(config.skills?.followme);
   const override = (fm.cmdVelTopic ?? "").trim();
-  if (override) return override;
+  // Teleop often stores a canonical short topic (e.g. `/cmd_vel`); ROS on the robot is usually
+  // `/<robot.namespace>/cmd_vel`. Always run through toNamespacedTopicFull so publishes match the bridge.
+  if (override) return toNamespacedTopicFull(config, override);
   const teleop = (config.teleop as { cmdVelTopic?: string } | undefined)?.cmdVelTopic?.trim();
-  if (teleop) return teleop;
+  if (teleop) return toNamespacedTopicFull(config, teleop);
   return toNamespacedTopicFull(config, "/cmd_vel");
 }
 
@@ -224,6 +228,15 @@ function runLoopTick(
         } else {
           depthSampleBad = true;
           linearX = 0;
+          const now = Date.now();
+          if (now - lastDepthInvalidWarnMs > 8000) {
+            lastDepthInvalidWarnMs = now;
+            context.logger.warn(
+              `Follow Me: depth sample invalid on "${depthTopic}" (timeout or no usable pixels). ` +
+                "Linear and search motion stay at 0 until depth works. Check: topic name vs `ros2 topic list`, " +
+                "sensor_msgs/Image depth is publishing, robot namespace matches config, Zenoh/ROS bridge from robot to gateway.",
+            );
+          }
         }
       } else {
         if (!loggedNoDepth) {
@@ -313,8 +326,13 @@ function runLoopTick(
           `Follow Me tick timing: total_ms=${totalMs.toFixed(1)} depth_ms=${depthMs.toFixed(1)} sectors_ms=${sectorsMs.toFixed(1)} ollama_ms=${ollamaMs.toFixed(1)} caps lin=${maxLinCap.toFixed(3)} ang=${maxAngCap.toFixed(3)}`,
         );
       }
-    } catch {
-      // Publish zero on error to avoid runaway
+    } catch (err) {
+      const now = Date.now();
+      if (now - lastDepthInvalidWarnMs > 8000) {
+        lastDepthInvalidWarnMs = now;
+        const msg = err instanceof Error ? err.message : String(err);
+        context.logger.warn(`Follow Me: tick error (${msg.slice(0, 200)}); publishing zero cmd_vel.`);
+      }
       transport.publish({
         topic,
         type: TWIST_TYPE,
@@ -338,6 +356,10 @@ export function startFollowLoop(
   const fm = getFollowMeConfig(config.skills?.followme);
   const rateHz = Math.min(15, Math.max(1, fm.rateHz ?? 5));
   const topic = getFollowMeCmdVelTopic(config);
+  const depthTopic = (fm.depthTopic ?? "").trim();
+  context.logger.info(
+    `Follow Me: loop started → cmd_vel="${topic}", depthTopic="${depthTopic || "(not set)"}", ${rateHz} Hz`,
+  );
   loopAbort = new AbortController();
 
   const transport = context.getTransport();
@@ -365,6 +387,7 @@ export function stopFollowLoop(
     loopAbort = null;
   }
   loggedNoDepth = false;
+  lastDepthInvalidWarnMs = 0;
   searchTickCount = 0;
   searchDirection = 1;
   sessionTargetDistanceM = null;
