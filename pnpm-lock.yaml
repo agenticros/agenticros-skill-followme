@@ -26,6 +26,11 @@ packages:
 
   '@agenticros/core@file:../agenticros/packages/core':
     resolution: {directory: ../agenticros/packages/core, type: directory}
+    peerDependencies:
+      mem0ai: ^2.0.0
+    peerDependenciesMeta:
+      mem0ai:
+        optional: true
 
   '@eclipse-zenoh/zenoh-ts@1.9.0':
     resolution: {integrity: sha512-qG3VR9Yt81+KjH0WOybyKcNVS0vtBmmhyUJ7dCc5n+8AeAEYTpEvMBTh43Lwu8P+imzMYvFqjaMAO2HFK+x9hA==}
@@ -72,14 +77,18 @@ packages:
     resolution: {integrity: sha512-trj8uB+J71SuW9g8TbbDgTbvqrmUHQjh5uhqBAraBhg4hxm7aG9AFPvz34yJ/XZnl28x0NuLjptJYKNSUlgM9Q==}
     engines: {node: '>= 14'}
 
+  '@foxglove/cdr@3.5.1':
+    resolution: {integrity: sha512-Fubm04/xC1SkeNaviwUhbFk8nAiiNvIqlmP5MW7r6IVGFa35rsA0E3/Rg/pGdE77ZXf4XNwShZcQoEmje62ddQ==}
+    engines: {node: '>= 14'}
+
   '@foxglove/message-definition@0.2.0':
     resolution: {integrity: sha512-IQHIGCvBZR8GIua9nEpS+hsMF3gm1bfbrrnjG0rgtcFBWiNuKbzx4vIP8OIwDC+8wtwcFdfJhf4Vp5TPFiUUcQ==}
 
   '@foxglove/message-definition@0.5.0':
     resolution: {integrity: sha512-B/2GvWn4wRSsPDywcmy6uNXgAfZRhiOAnmy3qAaS6MHVqiHQqs/RoDsoW6Gw9sXSweJpeH5qAqAihvm1pR9Thg==}
 
-  '@foxglove/rosmsg2-serialization@3.1.0':
-    resolution: {integrity: sha512-N43XcoYEwd2bCTWwx49VjN9UuK1+3njhWvbXNBrrHY83KBkgj7BHkDQqnDbr69R0nFAJR0ufTFqJoj054tuO7g==}
+  '@foxglove/rosmsg2-serialization@3.1.2':
+    resolution: {integrity: sha512-KKtmHuuIQy6I0JLUi01LFhV7hrZb5xd+LegtuGz2+9L9pftBxtVVKhoxO6B/kQREGocIUOLP8494kxLF58LMWw==}
     engines: {node: '>= 20'}
 
   '@foxglove/rosmsg@4.2.2':
@@ -669,7 +678,7 @@ snapshots:
       '@eclipse-zenoh/zenoh-ts': 1.9.0
       '@foxglove/cdr': 3.5.0
       '@foxglove/rosmsg': 4.2.2
-      '@foxglove/rosmsg2-serialization': 3.1.0
+      '@foxglove/rosmsg2-serialization': 3.1.2
       node-datachannel: 0.12.0
       ws: 8.19.0
       zod: 3.25.76
@@ -742,13 +751,15 @@ snapshots:
 
   '@foxglove/cdr@3.5.0': {}
 
+  '@foxglove/cdr@3.5.1': {}
+
   '@foxglove/message-definition@0.2.0': {}
 
   '@foxglove/message-definition@0.5.0': {}
 
-  '@foxglove/rosmsg2-serialization@3.1.0':
+  '@foxglove/rosmsg2-serialization@3.1.2':
     dependencies:
-      '@foxglove/cdr': 3.5.0
+      '@foxglove/cdr': 3.5.1
       '@foxglove/message-definition': 0.5.0
       '@foxglove/rostime': 1.1.3
 
