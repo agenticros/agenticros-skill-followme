@@ -1,17 +1,75 @@
 {
   "name": "agenticros-skill-followme",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Follow Me skill for AgenticROS — depth-based (and optional Ollama VLM) person following",
+  "description": "Follow Me skill for AgenticROS — depth-based (optionally Ollama-VLM-assisted) person following with turn-to-track and search-when-lost.",
+  "keywords": [
+    "agenticros",
+    "ros2",
+    "robotics",
+    "follow",
+    "person-following",
+    "navigation",
+    "depth",
+    "ollama"
+  ],
+  "homepage": "https://github.com/agenticros/agenticros-skill-followme#readme",
+  "bugs": {
+    "url": "https://github.com/agenticros/agenticros-skill-followme/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agenticros/agenticros-skill-followme.git"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
-  "agenticrosSkill": true,
+  "agenticros": {
+    "id": "followme",
+    "displayName": "Follow Me",
+    "description": "Depth-based person following with optional Ollama / VLM, turn-to-follow, and search-when-lost behaviors. The reference implementation of the skill contract.",
+    "categories": [
+      "navigation",
+      "human-interaction",
+      "vision"
+    ],
+    "screenshots": [
+      "docs/follow-me.png"
+    ],
+    "capabilities": [
+      {
+        "id": "follow_robot",
+        "verb": "follow",
+        "description": "Drive forward while keeping a safe distance from whatever is in front of the camera (closed-loop on depth).",
+        "interruptible": true,
+        "blocks_base": true
+      },
+      {
+        "id": "follow_me_see",
+        "verb": "see",
+        "description": "Take a snapshot and ask the local Ollama VLM what's in front of the robot — useful for verifying the follow target.",
+        "interruptible": true,
+        "blocks_base": false
+      },
+      {
+        "id": "ollama_status",
+        "verb": "diagnose",
+        "description": "Report whether the local Ollama server is reachable and which vision model is installed.",
+        "interruptible": false,
+        "blocks_base": false
+      }
+    ]
+  },
   "dependencies": {
-    "@agenticros/core": "file:../agenticros/packages/core",
+    "@agenticros/core": "^0.5.0",
     "@sinclair/typebox": "^0.34.0"
   },
   "devDependencies": {
