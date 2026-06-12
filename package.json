@@ -41,9 +41,6 @@
       "human-interaction",
       "vision"
     ],
-    "screenshots": [
-      "docs/follow-me.png"
-    ],
     "capabilities": [
       {
         "id": "follow_robot",
