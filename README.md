@@ -1,4 +1,8 @@
-# agenticros-skill-followme
+# /followme
+
+```bash
+npx agenticros skills install @agenticros/followme
+```
 
 Follow Me skill for [AgenticROS](https://github.com/your-org/agenticros): the robot follows the user using depth (and optionally Ollama/VLM) and publishes `cmd_vel`.
 
@@ -20,10 +24,10 @@ Follow Me skill for [AgenticROS](https://github.com/your-org/agenticros): the ro
 1. **Install the skill** where the OpenClaw gateway can load it:
    - **Option A (recommended)**: Add to AgenticROS config as a package name:
      - In OpenClaw config, under `plugins.entries.agenticros.config`, set:
-       - `skillPackages`: `["agenticros-skill-followme"]`
-     - Install the package in the same environment as the gateway (e.g. `pnpm add agenticros-skill-followme` in the gateway app, or install globally).
+       - `skillPackages`: `["/followme"]`
+     - Install the package in the same environment as the gateway (e.g. `pnpm add /followme` in the gateway app, or install globally).
    - **Option B**: Clone this repo into a directory and add that directory to `skillPaths`:
-     - `skillPaths`: `["/path/to/agenticros-skill-followme"]`
+     - `skillPaths`: `["/path/to//followme"]`
      - Run `pnpm install` and `pnpm build` in this repo.
 2. **Configure** the skill in the same config under `skills.followme` (see [Contract](#contract-summary)).
 3. **Restart the OpenClaw gateway** so the plugin loads the skill.
