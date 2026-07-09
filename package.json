@@ -1,5 +1,5 @@
 {
-  "name": "agenticros-skill-followme",
+  "name": "@agenticros-skills/followme",
   "version": "0.2.0",
   "type": "module",
   "description": "Follow Me skill for AgenticROS — depth-based (optionally Ollama-VLM-assisted) person following with turn-to-track and search-when-lost.",
@@ -66,7 +66,7 @@
     ]
   },
   "dependencies": {
-    "@agenticros/core": "^0.5.0",
+    "@agenticros/core": "^0.8.0",
     "@sinclair/typebox": "^0.34.0"
   },
   "devDependencies": {
@@ -74,5 +74,8 @@
     "typescript": "^5.7.0"
   },
   "author": "PlaiPin",
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  }
 }
